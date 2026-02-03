@@ -1,0 +1,302 @@
+// prisma/schema.prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/**
+ * ============ NextAuth (unchanged) ============
+ */
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+
+  accounts Account[]
+  sessions Session[]
+
+  // Learning graph relations
+  chats    Chat[]
+  pathways Pathway[]
+  subjects UserSubject[] // per-user subjects/tracks
+
+  // Back-relations (explicit names where multiple relations exist)
+  assets                  Asset[] // Asset.owner
+  contentItemsCreated     ContentItem[]     @relation("ContentCreatedBy")
+  contentItemsUpdated     ContentItem[]     @relation("ContentUpdatedBy")
+  contentRevisionsCreated ContentRevision[] @relation("ContentRevisionCreatedBy")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+/**
+ * ============ Learning Graph ============
+ */
+
+enum PathwayStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum NodeType {
+  TOPIC
+  SUBTOPIC
+  EXERCISE
+  CHECKPOINT
+  RESOURCE
+}
+
+enum ContentType {
+  GRAPH
+  PICTOGRAPH
+  QA
+  TEXT
+}
+
+/**
+ * Per-user subject/track (no global catalog).
+ */
+model UserSubject {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  key         String // slug/identifier unique per user (e.g., "compiler-design")
+  title       String
+  description String?
+  meta        Json?
+
+  chats    Chat[]
+  pathways Pathway[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@unique([userId, key])
+  @@index([userId])
+  @@index([deletedAt])
+}
+
+model Chat {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title         String?
+  userSubjectId String?
+  userSubject   UserSubject? @relation(fields: [userSubjectId], references: [id], onDelete: SetNull)
+
+  meta Json? // model hints, UI prefs, etc.
+
+  // Each chat can have its own pathway snapshot (1:1 via Pathway.chatId)
+  pathway Pathway[]
+
+  // Quick resume pointer
+  lastNodeId String?
+  lastNode   PathNode? @relation("ChatLastNode", fields: [lastNodeId], references: [id], onDelete: SetNull)
+
+  startedAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId, startedAt])
+  @@index([userSubjectId])
+  @@index([deletedAt])
+}
+
+model Pathway {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // If this is a per-chat snapshot: one pathway per chat
+  chatId String?
+  chat   Chat?   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  userSubjectId String?
+  userSubject   UserSubject? @relation(fields: [userSubjectId], references: [id], onDelete: SetNull)
+
+  title    String?
+  status   PathwayStatus @default(DRAFT)
+  planSpec Json?
+
+  // Optional root pointer
+  rootNodeId String?
+  rootNode   PathNode? @relation("RootPointer", fields: [rootNodeId], references: [id], onDelete: SetNull)
+
+  nodes PathNode[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId, status])
+  @@index([userSubjectId])
+  @@index([deletedAt])
+  @@index([chatId])
+}
+
+model PathNode {
+  id        String  @id @default(cuid())
+  pathwayId String
+  pathway   Pathway @relation(fields: [pathwayId], references: [id], onDelete: Cascade)
+
+  // Linked-list adjacency (null for tail)
+  nextId String?    @unique
+  next   PathNode?  @relation("NextLink", fields: [nextId], references: [id])
+  prevOf PathNode[] @relation("NextLink") // back-reference(s) to nodes that point to this node via 'next'
+
+  // Tree hierarchy (null for root)
+  parentId String?
+  parent   PathNode?  @relation("ParentChild", fields: [parentId], references: [id])
+  children PathNode[] @relation("ParentChild")
+
+  orderIndex Int @default(0)
+
+  nodeType NodeType @default(TOPIC)
+  title    String?
+  props    Json?
+
+  contents ContentItem[]
+
+  // Back-relations to disambiguate multi-model links
+  // Pathway.rootNode -> PathNode
+  rootOf            Pathway[] @relation("RootPointer")
+  // Chat.lastNode -> PathNode
+  chatsPointingHere Chat[]    @relation("ChatLastNode")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([pathwayId, parentId, orderIndex])
+  @@index([deletedAt])
+}
+
+model ContentItem {
+  id     String   @id @default(cuid())
+  nodeId String
+  node   PathNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  kind       ContentType
+  label      String?
+  meta       Json?
+  orderIndex Int         @default(0)
+  tags       String[]
+
+  // GRAPH
+  graph Json?
+
+  // PICTOGRAPH
+  pictouri String?
+  ragInfo  Json?
+
+  // QA (no options stored)
+  question String?
+  answer   String?
+
+  // TEXT
+  text String?
+
+  // Audit / authorship
+  createdById String?
+  createdBy   User?   @relation("ContentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById String?
+  updatedBy   User?   @relation("ContentUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  revisions ContentRevision[]
+
+  @@index([nodeId, kind, orderIndex])
+  @@index([deletedAt])
+}
+
+model Asset {
+  id      String  @id @default(cuid())
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  uri    String
+  mime   String?
+  bytes  Int?
+  sha256 String? @unique
+  meta   Json?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([ownerId])
+  @@index([deletedAt])
+}
+
+model ContentRevision {
+  id        String      @id @default(cuid())
+  contentId String
+  content   ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  snapshot Json
+  reason   String?
+
+  createdById String?
+  createdBy   User?   @relation("ContentRevisionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([contentId, createdAt])
+}
