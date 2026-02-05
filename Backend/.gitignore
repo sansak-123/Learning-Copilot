@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data & embeddings
+data/
+docs/
+*.db
+*.faiss
+*.pkl
+*.jsonl
+
+# Logs & cache
+*.log
+logs/
+.cache/
+.tmp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VSCode / PyCharm
+.vscode/
+.idea/
+
+# Env variables
+.env
+.env.local
+.env.*
